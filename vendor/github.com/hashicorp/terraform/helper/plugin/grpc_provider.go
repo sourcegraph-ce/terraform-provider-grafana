@@ -3,7 +3,10 @@ package plugin
 import (
 	"encoding/json"
 	"errors"
+	"regexp"
+	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/zclconf/go-cty/cty"
 	ctyconvert "github.com/zclconf/go-cty/cty/convert"
@@ -13,8 +16,8 @@ import (
 	"github.com/hashicorp/terraform/config/hcl2shim"
 	"github.com/hashicorp/terraform/configs/configschema"
 	"github.com/hashicorp/terraform/helper/schema"
+	proto "github.com/hashicorp/terraform/internal/tfplugin5"
 	"github.com/hashicorp/terraform/plugin/convert"
-	"github.com/hashicorp/terraform/plugin/proto"
 	"github.com/hashicorp/terraform/terraform"
 )
 
@@ -387,7 +390,11 @@ func (s *GRPCProviderServer) ReadResource(_ context.Context, req *proto.ReadReso
 		return resp, nil
 	}
 
-	instanceState := schema.InstanceStateFromStateValue(stateVal, res.SchemaVersion)
+	instanceState, err := res.ShimInstanceStateFromValue(stateVal)
+	if err != nil {
+		resp.Diagnostics = convert.AppendProtoDiag(resp.Diagnostics, err)
+		return resp, nil
+	}
 
 	newInstanceState, err := res.RefreshWithoutUpgrade(instanceState, s.provider.Meta())
 	if err != nil {
@@ -399,18 +406,20 @@ func (s *GRPCProviderServer) ReadResource(_ context.Context, req *proto.ReadReso
 		// The old provider API used an empty id to signal that the remote
 		// object appears to have been deleted, but our new protocol expects
 		// to see a null value (in the cty sense) in that case.
-		newConfigMP, err := msgpack.Marshal(cty.NullVal(block.ImpliedType()), block.ImpliedType())
+		newStateMP, err := msgpack.Marshal(cty.NullVal(block.ImpliedType()), block.ImpliedType())
 		if err != nil {
 			resp.Diagnostics = convert.AppendProtoDiag(resp.Diagnostics, err)
 		}
 		resp.NewState = &proto.DynamicValue{
-			Msgpack: newConfigMP,
+			Msgpack: newStateMP,
 		}
 		return resp, nil
 	}
 
 	// helper/schema should always copy the ID over, but do it again just to be safe
 	newInstanceState.Attributes["id"] = newInstanceState.ID
+
+	newInstanceState.Attributes = normalizeFlatmapContainers(instanceState.Attributes, newInstanceState.Attributes)
 
 	newStateVal, err := hcl2shim.HCL2ValueFromFlatmap(newInstanceState.Attributes, block.ImpliedType())
 	if err != nil {
@@ -455,7 +464,12 @@ func (s *GRPCProviderServer) PlanResourceChange(_ context.Context, req *proto.Pl
 		Type: req.TypeName,
 	}
 
-	priorState := schema.InstanceStateFromStateValue(priorStateVal, res.SchemaVersion)
+	priorState, err := res.ShimInstanceStateFromValue(priorStateVal)
+	if err != nil {
+		resp.Diagnostics = convert.AppendProtoDiag(resp.Diagnostics, err)
+		return resp, nil
+	}
+
 	priorPrivate := make(map[string]interface{})
 	if len(req.PriorPrivate) > 0 {
 		if err := json.Unmarshal(req.PriorPrivate, &priorPrivate); err != nil {
@@ -467,9 +481,9 @@ func (s *GRPCProviderServer) PlanResourceChange(_ context.Context, req *proto.Pl
 	priorState.Meta = priorPrivate
 
 	// turn the proposed state into a legacy configuration
-	config := terraform.NewResourceConfigShimmed(proposedNewStateVal, block)
+	cfg := terraform.NewResourceConfigShimmed(proposedNewStateVal, block)
 
-	diff, err := s.provider.SimpleDiff(info, priorState, config)
+	diff, err := s.provider.SimpleDiff(info, priorState, cfg)
 	if err != nil {
 		resp.Diagnostics = convert.AppendProtoDiag(resp.Diagnostics, err)
 		return resp, nil
@@ -489,8 +503,33 @@ func (s *GRPCProviderServer) PlanResourceChange(_ context.Context, req *proto.Pl
 		return resp, nil
 	}
 
+	// strip out non-diffs
+	for k, v := range diff.Attributes {
+		if v.New == v.Old && !v.NewComputed && !v.NewRemoved {
+			delete(diff.Attributes, k)
+		}
+	}
+
+	if priorState == nil {
+		priorState = &terraform.InstanceState{}
+	}
+
 	// now we need to apply the diff to the prior state, so get the planned state
-	plannedStateVal, err := schema.ApplyDiff(priorStateVal, diff, block)
+	plannedAttrs, err := diff.Apply(priorState.Attributes, block)
+
+	plannedAttrs = normalizeFlatmapContainers(priorState.Attributes, plannedAttrs)
+
+	plannedStateVal, err := hcl2shim.HCL2ValueFromFlatmap(plannedAttrs, block.ImpliedType())
+	if err != nil {
+		resp.Diagnostics = convert.AppendProtoDiag(resp.Diagnostics, err)
+		return resp, nil
+	}
+
+	plannedStateVal, err = block.CoerceValue(plannedStateVal)
+	if err != nil {
+		resp.Diagnostics = convert.AppendProtoDiag(resp.Diagnostics, err)
+		return resp, nil
+	}
 	if err != nil {
 		resp.Diagnostics = convert.AppendProtoDiag(resp.Diagnostics, err)
 		return resp, nil
@@ -571,7 +610,11 @@ func (s *GRPCProviderServer) ApplyResourceChange(_ context.Context, req *proto.A
 		Type: req.TypeName,
 	}
 
-	priorState := schema.InstanceStateFromStateValue(priorStateVal, res.SchemaVersion)
+	priorState, err := res.ShimInstanceStateFromValue(priorStateVal)
+	if err != nil {
+		resp.Diagnostics = convert.AppendProtoDiag(resp.Diagnostics, err)
+		return resp, nil
+	}
 
 	private := make(map[string]interface{})
 	if len(req.PlannedPrivate) > 0 {
@@ -607,6 +650,13 @@ func (s *GRPCProviderServer) ApplyResourceChange(_ context.Context, req *proto.A
 		}
 	}
 
+	// strip out non-diffs
+	for k, v := range diff.Attributes {
+		if v.New == v.Old && !v.NewComputed && !v.NewRemoved {
+			delete(diff.Attributes, k)
+		}
+	}
+
 	if private != nil {
 		diff.Meta = private
 	}
@@ -615,6 +665,14 @@ func (s *GRPCProviderServer) ApplyResourceChange(_ context.Context, req *proto.A
 	if err != nil {
 		resp.Diagnostics = convert.AppendProtoDiag(resp.Diagnostics, err)
 		return resp, nil
+	}
+
+	// here we use the planned state to check for unknown/zero containers values
+	// when normalizing the flatmap.
+	plannedState := hcl2shim.FlatmapValueFromHCL2(plannedStateVal)
+
+	if newInstanceState != nil {
+		newInstanceState.Attributes = normalizeFlatmapContainers(plannedState, newInstanceState.Attributes)
 	}
 
 	newStateVal := cty.NullVal(block.ImpliedType())
@@ -788,6 +846,89 @@ func pathToAttributePath(path cty.Path) *proto.AttributePath {
 	}
 
 	return &proto.AttributePath{Steps: steps}
+}
+
+// normalizeFlatmapContainers removes empty containers, and fixes counts in a
+// set of flatmapped attributes. The prior value is used to determine if there
+// could be zero-length flatmap containers which we need to preserve. This
+// allows a provider to set an empty computed container in the state without
+// creating perpetual diff.
+func normalizeFlatmapContainers(prior map[string]string, attrs map[string]string) map[string]string {
+	keyRx := regexp.MustCompile(`.\.[%#]$`)
+
+	// while we can't determine if the value was actually computed here, we will
+	// trust that our shims stored and retrieved a zero-value container
+	// correctly.
+	zeros := map[string]bool{}
+	for k, v := range prior {
+		if keyRx.MatchString(k) && (v == "0" || v == hcl2shim.UnknownVariableValue) {
+			zeros[k] = true
+		}
+	}
+
+	// find container keys
+	var keys []string
+	for k, v := range attrs {
+		if !keyRx.MatchString(k) {
+			continue
+		}
+
+		if v == hcl2shim.UnknownVariableValue {
+			// if the index value indicates the container is unknown, skip
+			// updating the counts.
+			continue
+		}
+
+		keys = append(keys, k)
+	}
+
+	// sort the keys in reverse, so that we check the longest subkeys first
+	sort.Slice(keys, func(i, j int) bool {
+		a, b := keys[i], keys[j]
+
+		if strings.HasPrefix(a, b) {
+			return true
+		}
+
+		if strings.HasPrefix(b, a) {
+			return false
+		}
+
+		return a > b
+	})
+
+	for _, k := range keys {
+		prefix := k[:len(k)-1]
+		indexes := map[string]int{}
+		for cand := range attrs {
+			if cand == k {
+				continue
+			}
+
+			if strings.HasPrefix(cand, prefix) {
+				idx := cand[len(prefix):]
+				dot := strings.Index(idx, ".")
+				if dot > 0 {
+					idx = idx[:dot]
+				}
+				indexes[idx]++
+			}
+		}
+
+		switch {
+		case len(indexes) == 0 && zeros[k]:
+			// if there were no keys, but the value was known to be zero, the provider
+			// must have set the computed value to an empty container, and we
+			// need to leave it in the flatmap.
+			attrs[k] = "0"
+		case len(indexes) > 0:
+			attrs[k] = strconv.Itoa(len(indexes))
+		default:
+			delete(attrs, k)
+		}
+	}
+
+	return attrs
 }
 
 // helper/schema throws away timeout values from the config and stores them in
