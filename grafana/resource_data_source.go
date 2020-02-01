@@ -76,19 +76,103 @@ func ResourceDataSource() *schema.Resource {
 				Optional: true,
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
+						"tls_auth": {
+							Type:     schema.TypeBool,
+							Optional: true,
+						},
+						"tls_auth_with_ca_cert": {
+							Type:     schema.TypeBool,
+							Optional: true,
+						},
+						"tls_skip_verify": {
+							Type:     schema.TypeBool,
+							Optional: true,
+						},
+						"graphite_version": {
+							Type:     schema.TypeString,
+							Optional: true,
+						},
+						"time_interval": {
+							Type:     schema.TypeString,
+							Optional: true,
+						},
+						"es_version": {
+							Type:     schema.TypeInt,
+							Optional: true,
+						},
+						"time_field": {
+							Type:     schema.TypeString,
+							Optional: true,
+						},
+						"interval": {
+							Type:     schema.TypeString,
+							Optional: true,
+						},
+						"log_message_field": {
+							Type:     schema.TypeString,
+							Optional: true,
+						},
+						"log_level_field": {
+							Type:     schema.TypeString,
+							Optional: true,
+						},
 						"auth_type": {
 							Type:     schema.TypeString,
-							Required: true,
+							Optional: true,
+						},
+						"assume_role_arn": {
+							Type:     schema.TypeString,
+							Optional: true,
 						},
 						"default_region": {
 							Type:     schema.TypeString,
-							Required: true,
+							Optional: true,
 						},
 						"custom_metrics_namespaces": {
 							Type:     schema.TypeString,
 							Optional: true,
 						},
-						"assume_role_arn": {
+						"tsdb_version": {
+							Type:     schema.TypeString,
+							Optional: true,
+						},
+						"tsdb_resolution": {
+							Type:     schema.TypeString,
+							Optional: true,
+						},
+						"encrypt": {
+							Type:     schema.TypeString,
+							Optional: true,
+						},
+						"ssl_mode": {
+							Type:     schema.TypeString,
+							Optional: true,
+						},
+						"postgres_version": {
+							Type:     schema.TypeInt,
+							Optional: true,
+						},
+						"timescaledb": {
+							Type:     schema.TypeBool,
+							Optional: true,
+						},
+						"max_open_conns": {
+							Type:     schema.TypeInt,
+							Optional: true,
+						},
+						"max_idle_conns": {
+							Type:     schema.TypeInt,
+							Optional: true,
+						},
+						"conn_max_lifetime": {
+							Type:     schema.TypeInt,
+							Optional: true,
+						},
+						"http_method": {
+							Type:     schema.TypeString,
+							Optional: true,
+						},
+						"query_timeout": {
 							Type:     schema.TypeString,
 							Optional: true,
 						},
@@ -102,13 +186,40 @@ func ResourceDataSource() *schema.Resource {
 				Sensitive: true,
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
+						"tls_ca_cert": {
+							Type:      schema.TypeString,
+							Optional:  true,
+							Sensitive: true,
+						},
+						"tls_client_cert": {
+							Type:      schema.TypeString,
+							Optional:  true,
+							Sensitive: true,
+						},
+						"tls_client_key": {
+							Type:      schema.TypeString,
+							Optional:  true,
+							Sensitive: true,
+						},
+						"password": {
+							Type:      schema.TypeString,
+							Optional:  true,
+							Sensitive: true,
+						},
+						"basic_auth_password": {
+							Type:      schema.TypeString,
+							Optional:  true,
+							Sensitive: true,
+						},
 						"access_key": {
-							Type:     schema.TypeString,
-							Required: true,
+							Type:      schema.TypeString,
+							Optional:  true,
+							Sensitive: true,
 						},
 						"secret_key": {
-							Type:     schema.TypeString,
-							Required: true,
+							Type:      schema.TypeString,
+							Optional:  true,
+							Sensitive: true,
 						},
 					},
 				},
@@ -237,15 +348,63 @@ func makeDataSource(d *schema.ResourceData) (*gapi.DataSource, error) {
 
 func makeJSONData(d *schema.ResourceData) gapi.JSONData {
 	return gapi.JSONData{
+		// Used by all datasources
+		TlsAuth:           d.Get("json_data.0.tls_auth").(bool),
+		TlsAuthWithCACert: d.Get("json_data.0.tls_auth_with_ca_cert").(bool),
+		TlsSkipVerify:     d.Get("json_data.0.tls_skip_verify").(bool),
+
+		// Used by Graphite
+		GraphiteVersion: d.Get("json_data.0.graphite_version").(string),
+
+		// Used by Prometheus, Elasticsearch, InfluxDB, MySQL, PostgreSQL and MSSQL
+		TimeInterval: d.Get("json_data.0.time_interval").(string),
+
+		// Used by Elasticsearch
+		EsVersion:       d.Get("json_data.0.es_version").(int64),
+		TimeField:       d.Get("json_data.0.time_field").(string),
+		Interval:        d.Get("json_data.0.interval").(string),
+		LogMessageField: d.Get("json_data.0.log_message_field").(string),
+		LogLevelField:   d.Get("json_data.0.log_level_field").(string),
+
+		// Used by Cloudwatch
 		AuthType:                d.Get("json_data.0.auth_type").(string),
+		AssumeRoleArn:           d.Get("json_data.0.assume_role_arn").(string),
 		DefaultRegion:           d.Get("json_data.0.default_region").(string),
 		CustomMetricsNamespaces: d.Get("json_data.0.custom_metrics_namespaces").(string),
-		AssumeRoleArn:           d.Get("json_data.0.assume_role_arn").(string),
+
+		// Used by OpenTSDB
+		TsdbVersion:    d.Get("json_data.0.tsdb_version").(string),
+		TsdbResolution: d.Get("json_data.0.tsdb_resolution").(string),
+
+		// Used by MSSQL
+		Encrypt: d.Get("json_data.0.encrypt").(string),
+
+		// Used by PostgreSQL
+		Sslmode:         d.Get("json_data.0.ssl_mode").(string),
+		PostgresVersion: d.Get("json_data.0.posgresdb_version").(int64),
+		Timescaledb:     d.Get("json_data.0.timescaledb").(bool),
+
+		// Used by MySQL, PostgreSQL and MSSQL
+		MaxOpenConns:    d.Get("json_data.0.max_open_conns").(int64),
+		MaxIdleConns:    d.Get("json_data.0.max_idle_conns").(int64),
+		ConnMaxLifetime: d.Get("json_data.0.conn_max_lifetime").(int64),
+
+		// Used by Prometheus
+		HttpMethod:   d.Get("json_data.0.http_method").(string),
+		QueryTimeout: d.Get("json_data.0.query_timeout").(string),
 	}
 }
 
 func makeSecureJSONData(d *schema.ResourceData) gapi.SecureJSONData {
 	return gapi.SecureJSONData{
+		// Used by all datasources
+		TlsCACert:         d.Get("secure_json_data.0.tls_ca_cert").(string),
+		TlsClientCert:     d.Get("secure_json_data.0.tls_client_cert").(string),
+		TlsClientKey:      d.Get("secure_json_data.0.tls_client_key").(string),
+		Password:          d.Get("secure_json_data.0.password").(string),
+		BasicAuthPassword: d.Get("secure_json_data.0.basic_auth_password").(string),
+
+		// Used by Cloudwatch
 		AccessKey: d.Get("secure_json_data.0.access_key").(string),
 		SecretKey: d.Get("secure_json_data.0.secret_key").(string),
 	}
