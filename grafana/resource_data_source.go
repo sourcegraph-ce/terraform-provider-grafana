@@ -52,10 +52,11 @@ func ResourceDataSource() *schema.Resource {
 			},
 
 			"basic_auth_password": {
-				Type:      schema.TypeString,
-				Optional:  true,
-				Default:   "",
-				Sensitive: true,
+				Type:       schema.TypeString,
+				Optional:   true,
+				Default:    "",
+				Sensitive:  true,
+				Deprecated: "The basic_auth_password attribute is deprecated, use secure_json_data.basic_auth_password instead.",
 			},
 
 			"username": {
@@ -65,10 +66,11 @@ func ResourceDataSource() *schema.Resource {
 			},
 
 			"password": {
-				Type:      schema.TypeString,
-				Optional:  true,
-				Default:   "",
-				Sensitive: true,
+				Type:       schema.TypeString,
+				Optional:   true,
+				Default:    "",
+				Sensitive:  true,
+				Deprecated: "The password attribute is deprecated, use secure_json_data.password instead.",
 			},
 
 			"json_data": {
